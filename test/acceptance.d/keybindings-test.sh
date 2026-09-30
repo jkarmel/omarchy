@@ -119,6 +119,23 @@ menu_pid=""
 pass "real menu search and selection execute the retained closure"
 screenshot success-keybindings-after-selection
 
+# Escape is a normal dismissal, even after narrowing to an executable action.
+omarchy-menu-keybindings >"$test_dir/menu-output" 2>&1 &
+menu_pid=$!
+wait_until "menu opens before cancellation" 10 layer_on_overlay omarchy-menu
+wtype 'QA retained closure'
+wait_until "closure is searchable before cancellation" 10 screen_contains 'QA retained closure'
+before=$(wc -l <"$test_dir/actions")
+# The first Escape clears the filter; the second dismisses the menu.
+wtype -k Escape
+wtype -k Escape
+wait_until "Escape closes the menu" 10 layer_off_overlay omarchy-menu
+wait "$menu_pid" || fail "Escape must exit successfully" "$(cat "$test_dir/menu-output")"
+menu_pid=""
+[[ $(wc -l <"$test_dir/actions") == "$before" ]] || fail "Escape must not invoke the highlighted action"
+pass "Escape succeeds without invoking the highlighted action"
+screenshot success-keybindings-cancelled
+
 # Failures after selection must reach a desktop user, not just the launcher's
 # stderr. Keep the real menu open while invalidating its captured selection.
 for change in disabled reload; do

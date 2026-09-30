@@ -374,7 +374,14 @@ if [[ $print_only == "true" ]]; then
 else
   records=$(output_binding_records) || exit
   selection=$(cut -f1 <<<"$records" |
-    omarchy-menu-select 'Keybindings' -- --width 800 --height 500)
+    omarchy-menu-select 'Keybindings' -- --width 800 --height 500) || {
+    selection_status=$?
+    if (( selection_status == 1 )); then
+      exit 0 # Escape dismisses the menu without selecting an action.
+    else
+      exit "$selection_status"
+    fi
+  }
 
   if [[ -n $selection ]]; then
     while IFS=$'\t' read -r label dispatcher arg; do

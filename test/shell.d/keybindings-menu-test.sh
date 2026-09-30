@@ -258,6 +258,20 @@ grep -F 'omarchy_keybindings.invoke("abc-def", 3)' "$tmpdir/dispatch" >/dev/null
 [[ ! -e $tmpdir/notifications ]] || fail "successful selection must not notify"
 pass "menu selection invokes the chosen duplicate by validated token"
 
+cp "$stub_bin/omarchy-menu-select" "$tmpdir/select-success"
+cp "$tmpdir/dispatch" "$tmpdir/dispatch-before-cancel"
+printf '#!/bin/bash\ncat >/dev/null\nexit 1\n' >"$stub_bin/omarchy-menu-select"
+interactive_keybindings || fail "Escape is a successful dismissal"
+cmp "$tmpdir/dispatch" "$tmpdir/dispatch-before-cancel" || fail "Escape must not dispatch a binding"
+[[ ! -e $tmpdir/notifications ]] || fail "Escape must not report an error"
+pass "Escape dismisses the menu successfully without dispatch or notification"
+printf '#!/bin/bash\ncat >/dev/null\nexit 2\n' >"$stub_bin/omarchy-menu-select"
+status=0
+interactive_keybindings || status=$?
+[[ $status == 2 ]] || fail "menu errors other than cancellation keep their failure status"
+pass "non-cancellation menu errors remain failures"
+cp "$tmpdir/select-success" "$stub_bin/omarchy-menu-select"
+
 # hyprctl can return a Lua error as text with a successful process status.
 for result in 'Keybindings changed; reopen the menu' 'Keybinding was removed or disabled'; do
   cat >"$stub_bin/hyprctl" <<STUB
