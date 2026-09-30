@@ -379,6 +379,7 @@ else
     if (( selection_status == 1 )); then
       exit 0 # Escape dismisses the menu without selecting an action.
     else
+      menu_error "Could not open the keybindings menu. The shell may be unavailable; try again."
       exit "$selection_status"
     fi
   }

@@ -269,7 +269,31 @@ printf '#!/bin/bash\ncat >/dev/null\nexit 2\n' >"$stub_bin/omarchy-menu-select"
 status=0
 interactive_keybindings || status=$?
 [[ $status == 2 ]] || fail "menu errors other than cancellation keep their failure status"
+grep -q 'Could not open' "$tmpdir/notifications" || fail "non-cancellation menu errors must notify"
+rm "$tmpdir/notifications"
 pass "non-cancellation menu errors remain failures"
+cp "$tmpdir/select-success" "$stub_bin/omarchy-menu-select"
+
+# Exercise the real selector: it must distinguish a shell launch failure from
+# a menu which actually opened and was dismissed without a selection.
+rm "$stub_bin/omarchy-menu-select"
+ln -s "$ROOT/bin/omarchy-menu-select" "$stub_bin/omarchy-menu-select"
+printf '#!/bin/bash\nexit 1\n' >"$stub_bin/omarchy-shell"
+chmod +x "$stub_bin/omarchy-shell"
+status=0
+interactive_keybindings >"$tmpdir/out" 2>"$tmpdir/err" || status=$?
+[[ $status == 2 ]] || fail "a real selector launch failure must not look like Escape"
+grep -q 'Could not open' "$tmpdir/notifications" || fail "a failed selector launch must notify"
+rm "$tmpdir/notifications"
+cat >"$stub_bin/omarchy-shell" <<'STUB'
+#!/bin/bash
+touch "$(jq -r .doneFile <<<"$4")"
+STUB
+interactive_keybindings || fail "a real selector cancellation is successful"
+[[ ! -e $tmpdir/notifications ]] || fail "a real selector cancellation must not notify"
+cmp "$tmpdir/dispatch" "$tmpdir/dispatch-before-cancel" || fail "a real selector cancellation must not dispatch"
+pass "real selector launch failures and successful cancellation remain distinct"
+rm "$stub_bin/omarchy-menu-select" "$stub_bin/omarchy-shell"
 cp "$tmpdir/select-success" "$stub_bin/omarchy-menu-select"
 
 # hyprctl can return a Lua error as text with a successful process status.
