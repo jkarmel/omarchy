@@ -21,6 +21,7 @@ root = Path(os.environ['OMARCHY_PATH'])
 socket_path = Path(os.environ['XDG_RUNTIME_DIR']) / 'hypr' / os.environ['HYPRLAND_INSTANCE_SIGNATURE'] / '.socket.sock'
 terminal_pid = None
 initial_client_pids = set()
+crash_clients = set()
 
 
 def command(*args, timeout=20):
@@ -65,12 +66,25 @@ def capture(name):
   command('grim', str(artifacts / (name + '.png')))
 
 
+def process_environment(pid):
+  entries = os.fsdecode(Path(f'/proc/{pid}/environ').read_bytes()).split('\0')
+  return dict(entry.split('=', 1) for entry in entries if '=' in entry)
+
+
 def close_crash_reporters():
   for client in query('clients'):
     if client['class'] == 'org.quickshell' and client['pid'] not in initial_client_pids:
       try:
-        os.kill(client['pid'], signal.SIGTERM)
-      except ProcessLookupError:
+        descriptor = os.pidfd_open(client['pid'])
+        try:
+          environment = process_environment(client['pid'])
+          # Only crash reporters receive DUMP_FD; the re-execed shell does not.
+          # Match the launcher we deliberately crashed, not another Qt window.
+          if environment.get('__QUICKSHELL_CRASH_DUMP_FD') and environment.get('OMARCHY_BAR_CLIENT') in crash_clients:
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        finally:
+          os.close(descriptor)
+      except (ProcessLookupError, FileNotFoundError, PermissionError):
         pass
 
 
@@ -78,6 +92,12 @@ def layers(namespace):
   return [layer for monitor in query('layers').values()
       for level in monitor['levels'].values() for layer in level
       if layer['namespace'] == namespace]
+
+
+def crash_shell():
+  pid = layers('omarchy-bar')[0]['pid']
+  crash_clients.add(process_environment(pid)['OMARCHY_BAR_CLIENT'])
+  os.kill(pid, signal.SIGSEGV)
 
 
 def geometry():
@@ -185,7 +205,7 @@ try:
   # A failed reconnect must not strand the main shell on its own zone. Keep
   # the host down past the first retry, then restart just that configuration.
   main_pid = layers('omarchy-bar')[0]['pid']
-  main_env = dict(entry.split('=', 1) for entry in Path(f'/proc/{main_pid}/environ').read_text().split('\0') if '=' in entry)
+  main_env = process_environment(main_pid)
   os.kill(helper_pid, signal.SIGKILL)
   wait('dead reservation host is unmapped', lambda: not layers('omarchy-bar-reservation'))
   time.sleep(2)
@@ -198,7 +218,7 @@ try:
   # SIGSEGV goes through Quickshell's own crash handler and core-dump child;
   # SIGKILL alone does not exercise inherited socket descriptors there.
   time.sleep(11)
-  stable_during('segfault-recovery', lambda: os.kill(layers('omarchy-bar')[0]['pid'], signal.SIGSEGV))
+  stable_during('segfault-recovery', crash_shell)
   capture('success-bar-segfault-recovery')
   close_crash_reporters()
   style_path.write_text('[bar]\nsize-horizontal = 300\nsize-vertical = 300\nscale-with-font = false\n')
