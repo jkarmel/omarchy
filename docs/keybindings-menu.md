@@ -8,6 +8,8 @@ The menu reads bindings collected inside the running Hyprland Lua state. It does
 
 `omarchy_keybindings.invoke(generation, id)` validates the generation and current enabled state, then passes the retained action to `hl.dispatch`. Arbitrary Lua closures retain their captured variables. A selection from before a reload, or one removed/disabled while the menu is open, fails instead of executing a different or inactive action. A fresh UUID on every bootstrap prevents ID reuse across reloads or compositor restarts.
 
+The collector runs after `o.bind` converts table-based menu, panel, media, brightness, and notification actions into native global dispatchers. Those shortcuts keep their direct path to the shell. The terminal binding retains `o.launch_terminal()` itself, so selecting it reads the focused window's PID at invocation time. Neither path needs the source scanner's `o.bind_commands` fallback.
+
 ## Compatibility
 
 Hyprland 0.56.2 crashes when `is_enabled()` is called on an expired keybinding handle. Its native `tostring` implementation safely reports `HL.Keybind(expired)`, which the collector checks before accessing any handle property. This is an expiry guard for real handles, not a replacement implementation of Hyprland APIs. The VM test exercises unbind, removal, disabled state, and re-enabling.
@@ -18,7 +20,7 @@ Only bindings with descriptions appear. The small set of intentionally grouped a
 
 ## Tests
 
-- `test/shell.d/keybindings-registry-test.sh`: retained actions, metadata serialization, disabled/removed handles, repeated installation, stale IDs, and the upgrade migration.
+- `test/shell.d/keybindings-registry-test.sh`: retained actions, the current terminal and shell-shortcut helpers, metadata serialization, disabled/removed handles, repeated installation, stale IDs, and the upgrade migration.
 - `test/shell.d/keybindings-menu-test.sh`: presentation and alternative chords, extra modifiers/keycodes, control characters and punctuation, duplicate selection, invalid IPC responses, an assertion that no external Lua interpreter is started, and visible errors for unavailable registries and failed selections.
 - `test/acceptance.d/keybindings-test.sh`: real VM configuration containing live list queries, simultaneous listings without configuration side effects, native dispatchers and closures, submaps, enable/disable, removed handles, stale selections, and actual menu search/selection with screenshots. It also checks visible rejection notifications, migration behavior with offline/expired/live sessions and a custom entrypoint, opening recovery instructions from the notification, and restoring the menu with the documented bootstrap line.
 

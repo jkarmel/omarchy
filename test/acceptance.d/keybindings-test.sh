@@ -106,13 +106,13 @@ pass "reload rejects stale selections instead of invoking reused IDs"
 # Exercise the actual searchable menu and its dispatch path, not just the API.
 omarchy-menu-keybindings >"$test_dir/menu-output" 2>&1 &
 menu_pid=$!
-wait_until "keybindings menu opens" 10 layer_present omarchy-menu
+wait_until "keybindings menu opens" 10 layer_on_overlay omarchy-menu
 wtype 'QA retained closure'
 wait_until "custom closure is searchable" 10 screen_contains 'QA retained closure'
 screenshot success-keybindings-closure-search
 before=$(wc -l <"$test_dir/actions")
 wtype -k Return
-wait_until "keybindings menu closes after selection" 10 layer_absent omarchy-menu
+wait_until "keybindings menu closes after selection" 10 layer_off_overlay omarchy-menu
 wait "$menu_pid" || fail "menu dispatch exits successfully" "$(cat "$test_dir/menu-output")"
 menu_pid=""
 (( $(wc -l <"$test_dir/actions") == before + 1 )) || fail "menu invokes the selected closure once"
@@ -125,7 +125,7 @@ for change in disabled reload; do
   omarchy-shell notifications dismissAll >/dev/null
   omarchy-menu-keybindings >"$test_dir/menu-output" 2>&1 &
   menu_pid=$!
-  wait_until "menu opens before $change" 10 layer_present omarchy-menu
+  wait_until "menu opens before $change" 10 layer_on_overlay omarchy-menu
   wtype 'QA retained closure'
   wait_until "closure is searchable before $change" 10 screen_contains 'QA retained closure'
   before=$(wc -l <"$test_dir/actions")
@@ -136,7 +136,7 @@ for change in disabled reload; do
     wait_until "fixture reloads before selecting stale entry" 10 fixture_loaded
   fi
   wtype -k Return
-  wait_until "menu closes after $change rejection" 10 layer_absent omarchy-menu
+  wait_until "menu closes after $change rejection" 10 layer_off_overlay omarchy-menu
   if wait "$menu_pid"; then fail "$change selection must fail"; fi
   menu_pid=""
   [[ $(wc -l <"$test_dir/actions") == "$before" ]] || fail "$change selection must not execute an action"

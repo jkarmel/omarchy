@@ -5,7 +5,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 require_command lua
 require_command jq
 
-output=$(lua "$ROOT/test/shell.d/fixtures/keybindings/registry.lua" "$ROOT") || fail "live binding registry behavior"
+output=$(OMARCHY_PATH="$ROOT" lua "$ROOT/test/shell.d/fixtures/keybindings/registry.lua" "$ROOT") || fail "live binding registry behavior"
 printf '%s\n' "$output" | grep '^ok -'
 snapshot=$(sed -n 's/^SNAPSHOT://p' <<<"$output")
 jq -e '.bindings | length == 3' <<<"$snapshot" >/dev/null || fail "registry emits valid JSON"
