@@ -165,6 +165,20 @@ try:
   set_config(position='top', transparent=True)
   stable_during('transparent-restart', lambda: command('omarchy-restart-shell'))
   capture('success-bar-transparent')
+
+  # A failed reconnect must not strand the main shell on its own zone. Keep
+  # the host down past the first retry, then restart just that configuration.
+  main_pid = layers('omarchy-bar')[0]['pid']
+  main_env = dict(entry.split('=', 1) for entry in Path(f'/proc/{main_pid}/environ').read_text().split('\0') if '=' in entry)
+  os.kill(helper_pid, signal.SIGKILL)
+  wait('dead reservation host is unmapped', lambda: not layers('omarchy-bar-reservation'))
+  time.sleep(2)
+  command('env', 'OMARCHY_BAR_SOCKET=' + main_env['OMARCHY_BAR_SOCKET'],
+    'quickshell', '-d', '-n', '-p', str(root / 'shell/bar-reservation'))
+  wait('late host adopts the running shell', lambda: status()['ready'] and bool(layers('omarchy-bar-reservation')))
+  assert layers('omarchy-bar')[0]['pid'] == main_pid, 'reconnection does not restart the main shell'
+  stable_during('restart-after-late-host', lambda: command('omarchy-restart-shell'))
+  capture('success-bar-late-host')
   print('ok - bar reservation acceptance checks passed', flush=True)
 except Exception:
   capture('failure-bar-reservation')

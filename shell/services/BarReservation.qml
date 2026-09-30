@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -7,10 +9,12 @@ Item {
   required property var bar
   required property bool supported
   required property bool contentReady
-  readonly property bool configured: Quickshell.env("OMARCHY_BAR_SOCKET") !== ""
-  readonly property bool managed: configured && socket.connected
+  readonly property bool configured: !!Quickshell.env("OMARCHY_BAR_SOCKET")
+  property var socket: null
+  readonly property bool managed: configured && socket !== null && socket.connected
   property bool acknowledged: false
   property bool startupExpired: false
+  property int retryDelay: 1000
   readonly property bool waiting: configured && (!acknowledged || !contentReady) && !startupExpired
   readonly property string snapshot: {
     if (!bar || (supported && !bar.hiddenStateKnown)) return JSON.stringify({ version: 1, loading: true })
@@ -22,20 +26,41 @@ Item {
       background: supported ? String(Qt.rgba(bar.background.r, bar.background.g, bar.background.b, 1)) : "#202020",
       foreground: supported ? String(Qt.rgba(bar.foreground.r, bar.foreground.g, bar.foreground.b, 1)) : "#ffffff" })
   }
-  onSnapshotChanged: publish()
-  function publish() {
-    if (socket.connected) { socket.write(snapshot + "\n"); socket.flush() }
+  onSnapshotChanged: {
+    publish()
+    // A corrected configuration should not wait out an earlier rejection.
+    if (!managed) retryDelay = 1000
   }
-  Socket {
-    id: socket
-    path: Quickshell.env("OMARCHY_BAR_SOCKET")
-    connected: root.configured
-    onConnectedChanged: {
-      root.acknowledged = false
-      if (connected) root.publish()
-    }
-    parser: SplitParser {
-      onRead: function(line) { if (line === "ok") root.acknowledged = true }
+  function publish() {
+    if (socket && socket.connected) { socket.write(snapshot + "\n"); socket.flush() }
+  }
+  function reconnect() {
+    // Quickshell 0.3.1 cannot retry a failed connect on the same Socket.
+    // Replace it even when its connected property is already false.
+    if (socket) socket.destroy()
+    acknowledged = false
+    socket = socketComponent.createObject(root)
+    socket.connected = true
+  }
+  Component.onCompleted: { if (configured) reconnect() }
+  Component {
+    id: socketComponent
+    Socket {
+      id: connection
+      path: Quickshell.env("OMARCHY_BAR_SOCKET")
+      onConnectedChanged: {
+        if (root.socket !== connection) return
+        root.acknowledged = false
+        if (connected) root.publish()
+      }
+      parser: SplitParser {
+        onRead: function(line) {
+          if (root.socket === connection && line === "ok") {
+            root.acknowledged = true
+            root.retryDelay = 1000
+          }
+        }
+      }
     }
   }
   Timer {
@@ -44,9 +69,13 @@ Item {
     onTriggered: root.startupExpired = true
   }
   Timer {
-    interval: 1000
-    running: root.configured && !socket.connected
+    interval: root.retryDelay
+    running: root.configured && !root.managed
     repeat: true
-    onTriggered: socket.connected = true
+    onTriggered: {
+      // Rejected snapshots and unavailable hosts must not spin indefinitely.
+      root.retryDelay = Math.min(30000, root.retryDelay * 2)
+      root.reconnect()
+    }
   }
 }

@@ -34,12 +34,17 @@ if [[ ${1:-} == "-d" ]]; then
 fi
 if [[ ${1:-} == "ipc" ]]; then
   printf '%s\n' "$*" >>"$OMARCHY_TEST_RESERVATION_LOG"
+  if [[ ${*: -1} == "ping" ]]; then
+    printf '%s\n' "${OMARCHY_TEST_RESERVATION_REPLY:-ok}"
+    exit "${OMARCHY_TEST_RESERVATION_PING_STATUS:-0}"
+  fi
   exit 0
 fi
 
 printf '%s\n' "$*" >>"$OMARCHY_TEST_QS_LOG"
 printf 'watcher=%s popup=%s\n' \
   "${QS_DISABLE_FILE_WATCHER:-unset}" "${QS_NO_RELOAD_POPUP:-unset}" >>"$OMARCHY_TEST_QS_ENV_LOG"
+printf '%s\n' "${OMARCHY_BAR_SOCKET-unset}" >>"$OMARCHY_TEST_QS_ENV_LOG.socket"
 
 launches=$(wc -l <"$OMARCHY_TEST_QS_LOG")
 status=$(awk -v n="$launches" 'NR == n { print; found = 1 } END { if (!found) print "0" }' <<<"$OMARCHY_TEST_QS_STATUSES")
@@ -97,7 +102,9 @@ hyprctl_misses="$test_tmp/hyprctl-misses"
 launch_shell() {
   : >"$qs_log"
   : >"$qs_env_log"
+  : >"$qs_env_log.socket"
   : >"$logger_log"
+  [[ -z ${OMARCHY_TEST_RESERVATION_LOG:-} ]] || : >"$OMARCHY_TEST_RESERVATION_LOG"
 
   PATH="$fake_bin:$PATH" \
   OMARCHY_PATH="$shell_root" \
@@ -225,6 +232,8 @@ launch_shell '0' || fail "launch succeeds with the reservation host"
 grep -F -- "-d -n -p $shell_root/shell/bar-reservation" "$OMARCHY_TEST_RESERVATION_LOG" >/dev/null || fail "reservation launch is daemonized and duplicate-safe"
 first_socket=$(<"$OMARCHY_TEST_RESERVATION_LOG.socket")
 [[ $first_socket == "$XDG_RUNTIME_DIR/omarchy-bar-"*.sock ]] || fail "reservation socket stays inside the runtime directory"
+[[ $(<"$qs_env_log.socket") == "$first_socket" ]] || fail "a ready reservation socket reaches the main shell"
+grep -Fx "ipc -n -p $shell_root/shell/bar-reservation call reservation ping" "$OMARCHY_TEST_RESERVATION_LOG" >/dev/null || fail "reservation startup checks readiness"
 WAYLAND_DISPLAY="wayland-test-b" launch_shell '0' || fail "another display launches"
 [[ $(<"$OMARCHY_TEST_RESERVATION_LOG.socket") != "$first_socket" ]] || fail "display identities have different sockets"
 pass "reservation startup is separate and scoped to the display"
@@ -232,4 +241,21 @@ pass "reservation startup is separate and scoped to the display"
 OMARCHY_TEST_RESERVATION_STATUS=1 launch_shell '0' || fail "reservation failure does not fail shell launch"
 [[ $(launches) == 1 ]] || fail "the main shell still launches after reservation failure"
 grep -F "Bar reservation host unavailable" "$logger_log" >/dev/null || fail "reservation startup failure is recorded"
+[[ $(<"$qs_env_log.socket") == "unset" ]] || fail "a failed reservation launch leaves the socket unset"
 pass "reservation failure falls back to the main bar"
+
+# A real daemon can exit 0 after a QML load error. Neither a failed ping nor
+# Quickshell's exit-0 'not ready' response proves the host is available.
+OMARCHY_TEST_RESERVATION_PING_STATUS=255 launch_shell '0' || fail "an absent host does not prevent launch"
+[[ $(<"$qs_env_log.socket") == "unset" ]] || fail "a failed ping leaves the socket unset"
+grep -F "Bar reservation host unavailable" "$logger_log" >/dev/null || fail "a failed ping is recorded"
+OMARCHY_TEST_RESERVATION_REPLY='Not ready to accept queries yet.' launch_shell '0' || fail "an unready host does not prevent launch"
+[[ $(<"$qs_env_log.socket") == "unset" ]] || fail "a non-ok ping leaves the socket unset"
+pass "daemon success alone does not enable bar reservation"
+
+launch_shell $'255\n0' || fail "reservation host survives a shell retry"
+[[ $(grep -Fc 'call reservation crashed' "$OMARCHY_TEST_RESERVATION_LOG") == 1 ]] || fail "the reservation host is told about the retry"
+launch_shell $'255\n255\n255\n255\n255\n255' && fail "repeated crashes exhaust the budget with a reservation host"
+[[ $(grep -Fc 'call reservation crashed' "$OMARCHY_TEST_RESERVATION_LOG") == 5 ]] || fail "each retry updates the reservation message"
+[[ $(grep -Fc 'call reservation failed' "$OMARCHY_TEST_RESERVATION_LOG") == 1 ]] || fail "exhaustion updates the reservation message"
+pass "reservation status follows retries and exhausted recovery"

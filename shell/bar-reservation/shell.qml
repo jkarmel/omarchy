@@ -56,8 +56,9 @@ ShellRoot {
       property string pending: ""
       function reject() {
         // A live client falls back to its own exclusive zone when rejected.
-        // Release its old snapshot first, otherwise the two zones would add.
-        if (root.owner === connection) {
+        // After a restart the retained snapshot has no owner. Release that
+        // too, but never let a second client evict a still-connected owner.
+        if (!root.owner || root.owner === connection) {
           var released = Object.assign({}, root.snapshot)
           released.screens = []
           root.snapshot = released
