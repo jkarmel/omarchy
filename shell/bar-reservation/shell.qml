@@ -13,8 +13,17 @@ ShellRoot {
   property var snapshot: ({ screens: [], position: "top", size: 0, hidden: true,
     background: "#202020", foreground: "#ffffff" })
   property var owner: null
+  property string ownerClient: ""
   property bool ready: false
   property string message: "Shell starting…"
+  onReadyChanged: {
+    if (!ready) {
+      // Recheck after losing the live snapshot source. Until then its last
+      // hidden state is fresher than a potentially missed directory event.
+      flagKnown = false
+      hiddenProbe.running = true
+    }
+  }
 
   // The user can hide the bar while the main shell is down. Keep honoring the
   // same flag, without waiting for the plugin host to recover.
@@ -69,9 +78,12 @@ ShellRoot {
       function receive(line) {
         var next = State.parse(line)
         if (!next) return reject()
-        // A second shell must not supersede a still-connected owner.
-        if (root.owner && root.owner !== connection) return reject()
+        // A core-dump child may retain the old socket while the same shell
+        // re-execs. Its launcher token survives exec; a different launcher
+        // must still never supersede a live owner.
+        if (root.owner && root.owner !== connection && (!next.client || next.client !== root.ownerClient)) return reject()
         root.owner = connection
+        root.ownerClient = next.client
         if (next.loading) {
           root.ready = false
           root.message = "Shell restarting…"
@@ -120,7 +132,7 @@ ShellRoot {
       required property var modelData
       screen: modelData
       readonly property bool vertical: root.snapshot.position === "left" || root.snapshot.position === "right"
-      visible: !(root.flagKnown ? root.flagHidden : root.snapshot.hidden) && root.snapshot.size > 0 && root.snapshot.screens.indexOf(modelData.name) >= 0
+      visible: !(root.ready || !root.flagKnown ? root.snapshot.hidden : root.flagHidden) && root.snapshot.size > 0 && root.snapshot.screens.indexOf(modelData.name) >= 0
       anchors {
         top: root.snapshot.position === "top" || panel.vertical
         bottom: root.snapshot.position === "bottom" || panel.vertical

@@ -4,10 +4,14 @@ function parse(text) {
   var value
   try { value = JSON.parse(text) } catch (_) { return null }
   if (!value || value.version !== 1) return null
-  if (value.loading === true) return { loading: true }
+  var client = value.client === undefined ? "" : value.client
+  if (typeof client !== "string" || (client !== "" && !/^[0-9a-f-]{36}$/.test(client))) return null
+  if (value.loading === true) return { loading: true, client: client }
   if (!Array.isArray(value.screens) || value.screens.length > 32) return null
   if (["top", "bottom", "left", "right"].indexOf(value.position) < 0) return null
-  if (!Number.isInteger(value.size) || value.size < 0 || value.size > 256) return null
+  // barSize and the layer-shell exclusive zone are signed 32-bit integers.
+  // Do not impose a smaller limit than the bar's actual configuration supports.
+  if (!Number.isInteger(value.size) || value.size < 0 || value.size > 2147483647) return null
   if (typeof value.hidden !== "boolean" || typeof value.ready !== "boolean") return null
   var names = []
   for (var i = 0; i < value.screens.length; i++) {
@@ -17,7 +21,7 @@ function parse(text) {
   }
   var color = /^#[0-9a-fA-F]{6}$/
   if (!color.test(value.background) || !color.test(value.foreground)) return null
-  return { loading: false, screens: names, position: value.position, size: value.size,
+  return { loading: false, client: client, screens: names, position: value.position, size: value.size,
     hidden: value.hidden, ready: value.ready, background: value.background, foreground: value.foreground }
 }
 // SplitParser's empty marker delivers chunks without accumulating an unbounded

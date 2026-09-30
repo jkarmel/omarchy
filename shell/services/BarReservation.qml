@@ -10,17 +10,20 @@ Item {
   required property bool supported
   required property bool contentReady
   readonly property bool configured: !!Quickshell.env("OMARCHY_BAR_SOCKET")
+  readonly property string client: Quickshell.env("OMARCHY_BAR_CLIENT") || ""
   property var socket: null
-  readonly property bool managed: configured && socket !== null && socket.connected
+  // A connected transport does not mean the host has adopted our reservation.
+  // Keep the fallback zone until it acknowledges the published snapshot.
+  readonly property bool managed: configured && socket !== null && socket.connected && acknowledged
   property bool acknowledged: false
   property bool startupExpired: false
   property int retryDelay: 1000
   readonly property bool waiting: configured && (!acknowledged || !contentReady) && !startupExpired
   readonly property string snapshot: {
-    if (!bar || (supported && !bar.hiddenStateKnown)) return JSON.stringify({ version: 1, loading: true })
+    if (!bar || (supported && !bar.hiddenStateKnown)) return JSON.stringify({ version: 1, client: root.client, loading: true })
     var screens = []
     if (supported) for (var i = 0; i < Quickshell.screens.length; i++) screens.push(Quickshell.screens[i].name)
-    return JSON.stringify({ version: 1, screens: screens,
+    return JSON.stringify({ version: 1, client: root.client, screens: screens,
       position: supported ? bar.position : "top", size: supported ? bar.barSize : 0,
       hidden: !supported || bar.barHidden, ready: !supported || contentReady || startupExpired,
       background: supported ? String(Qt.rgba(bar.background.r, bar.background.g, bar.background.b, 1)) : "#202020",

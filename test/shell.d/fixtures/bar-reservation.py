@@ -67,9 +67,9 @@ class Lab:
       time.sleep(.05)
     raise AssertionError(description)
 
-  def ipc(self, directory, target, function, *args):
+  def ipc(self, directory, target, function, *args, env=None):
     result = subprocess.run(['quickshell', 'ipc', '-p', str(directory), 'call',
-      target, function, *map(str, args)], env=self.env, capture_output=True, text=True, timeout=2)
+      target, function, *map(str, args)], env=self.env if env is None else env, capture_output=True, text=True, timeout=2)
     return result.stdout.strip() if result.returncode == 0 else ''
 
   def launch(self, directory, env=None):
@@ -79,10 +79,12 @@ class Lab:
     self.processes.append((process, log))
     return process
 
-  def host(self, name='host'):
+  def host(self, name='host', watch=True):
     directory = self.work / name
     directory.mkdir()
     qml = (ROOT / 'shell/bar-reservation/shell.qml').read_text()
+    if not watch:
+      qml = qml.replace('watchChanges: true', 'watchChanges: false')
     qml = qml.replace('import Quickshell.Wayland\n', '')
     qml = qml.replace('    model: Quickshell.screens\n    delegate: PanelWindow {',
       '    id: surfaces\n    model: Quickshell.screens\n    delegate: FloatingWindow {')
@@ -181,6 +183,87 @@ with Lab() as lab:
       'an unset or empty socket maps the bar immediately')
 
 with Lab() as lab:
+  lab.env['WAYLAND_DISPLAY'] = 'wayland-selected'
+  host, process = lab.host()
+  other_env = dict(lab.env, WAYLAND_DISPLAY='wayland-other', OMARCHY_BAR_SOCKET=lab.path + '-other')
+  other = lab.launch(host, other_env)
+  lab.wait('second display host answers', lambda: lab.ipc(host, 'reservation', 'ping', env=other_env) == 'ok')
+  lab.ipc(host, 'reservation', 'restarting')
+  check(lab.status(host)['message'] == 'Shell restarting…' and
+    json.loads(lab.ipc(host, 'reservation', 'status', env=other_env))['message'] == 'Shell starting…',
+    'display-scoped restart IPC leaves the newer other-session host untouched')
+  subprocess.run(['quickshell', 'kill', '-p', str(host)], env=lab.env, capture_output=True, check=True, timeout=5)
+  process.wait(5)
+  check(other.poll() is None and lab.ipc(host, 'reservation', 'ping', env=other_env) == 'ok',
+    'display-scoped shutdown leaves another session using the same configuration alive')
+
+with Lab() as lab:
+  client, _ = lab.client()
+  lab.wait('fallback is visible', lambda: lab.state(client)['visible'])
+  with socket.socket(socket.AF_UNIX) as server:
+    server.bind(lab.path)
+    server.listen()
+    server.settimeout(5)
+    connection, _ = server.accept()
+    with connection:
+      connection.settimeout(2)
+      connection.recv(16384)
+      state = lab.state(client)
+      check(not state['managed'] and not state['acknowledged'] and state['visible'],
+        'a transport connection alone never relinquishes the fallback reservation')
+      connection.sendall(b'ok\n')
+      lab.wait('acknowledgement transfers ownership', lambda: lab.state(client)['managed'])
+
+for initially_hidden in [False, True]:
+  with Lab() as lab:
+    flag = lab.work / 'home/.local/state/omarchy/toggles/bar-off'
+    if initially_hidden:
+      flag.touch()
+    host, _ = lab.host(watch=False)
+    owner = lab.connect()
+    assert lab.send(owner, hidden=initially_hidden) == b'ok\n'
+    # Fault injection: the host's directory watch misses a real toggle, while
+    # the live bar has re-probed it through syncHidden and publishes its state.
+    if initially_hidden:
+      flag.unlink()
+    else:
+      flag.touch()
+    assert lab.send(owner, hidden=not initially_hidden) == b'ok\n'
+    lab.wait('live hidden state takes precedence',
+      lambda: lab.ipc(host, 'test', 'mapped') == str(initially_hidden).lower())
+    check(True, 'live snapshots override missed hidden-flag events in both directions')
+    owner.close()
+    lab.wait('disconnected host rechecks the flag', lambda: not lab.status(host)['ready'])
+    flag.unlink(missing_ok=True)
+    lab.wait('outage polling still sees later flag changes', lambda: lab.ipc(host, 'test', 'mapped') == 'true')
+
+with Lab() as lab:
+  host, _ = lab.host()
+  old_owner = lab.connect()
+  token = '12345678-1234-1234-1234-123456789abc'
+  assert lab.send(old_owner, client=token) == b'ok\n'
+  replacement = lab.connect()
+  check(lab.send(replacement, client=token, background='#123456') == b'ok\n',
+    'a re-exec adopts its launcher reservation while a core child holds the old socket')
+  old_owner.close()
+  check(lab.status(host)['ready'] and lab.status(host)['snapshot']['background'] == '#123456',
+    'closing the inherited old socket never disconnects the replacement owner')
+  duplicate = lab.connect()
+  check(lab.send(duplicate, client='87654321-1234-1234-1234-123456789abc') == b'',
+    'a different launcher cannot supersede a live owner')
+
+with Lab() as lab:
+  host, _ = lab.host()
+  client, process = lab.client(size=300)
+  lab.wait('large bar is acknowledged', lambda: lab.state(client)['acknowledged'])
+  check(lab.status(host)['snapshot']['size'] == 300 and lab.ipc(host, 'test', 'mapped') == 'true',
+    'a 300-pixel bar receives a live reservation')
+  process.terminate()
+  process.wait(5)
+  lab.wait('large bar disconnects', lambda: not lab.status(host)['ready'])
+  check(lab.ipc(host, 'test', 'mapped') == 'true', 'a large bar retains its reservation through shell loss')
+
+with Lab() as lab:
   host, _ = lab.host()
   owner = lab.connect()
   check(lab.send(owner) == b'ok\n', 'a valid owner is acknowledged')
@@ -189,9 +272,9 @@ with Lab() as lab:
     check(lab.send(duplicate, **patch) == b'', 'a duplicate owner is rejected')
     check(lab.status(host)['ready'] and lab.status(host)['snapshot']['screens'] == [''],
       'rejecting a duplicate preserves the live owner')
-  check(lab.send(owner, size=300) == b'', 'an invalid live owner is rejected')
+  check(lab.send(owner, size=-1) == b'', 'an invalid live owner is rejected')
   check(lab.status(host)['snapshot']['screens'] == [], 'rejecting the live owner releases its old zone')
-  for patch in [{'size': 300}, {'version': 2}]:
+  for patch in [{'size': -1}, {'version': 2}]:
     owner = lab.connect()
     assert lab.send(owner) == b'ok\n'
     lab.ipc(host, 'reservation', 'restarting')
@@ -209,7 +292,7 @@ with Lab() as lab:
   assert lab.send(owner) == b'ok\n'
   owner.close()
   lab.wait('owner disconnects', lambda: not lab.status(host)['ready'])
-  client, _ = lab.client(size=300)
+  client, _ = lab.client(size=-1)
   lab.wait('rejected client backs off', lambda: lab.state(client)['retryDelay'] >= 4000)
   state = lab.state(client)
   check(not state['managed'] and state['visible'] and lab.status(host)['snapshot']['screens'] == [],

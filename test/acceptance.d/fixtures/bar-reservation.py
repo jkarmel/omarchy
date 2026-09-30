@@ -13,11 +13,14 @@ artifacts = Path(sys.argv[1])
 artifacts.mkdir(parents=True, exist_ok=True)
 config_path = Path.home() / '.config/omarchy/shell.json'
 original_config = config_path.read_bytes()
+style_path = Path.home() / '.config/omarchy/shell.toml'
+original_style = style_path.read_bytes() if style_path.exists() else None
 flag = Path.home() / '.local/state/omarchy/toggles/bar-off'
 original_hidden = flag.exists()
 root = Path(os.environ['OMARCHY_PATH'])
 socket_path = Path(os.environ['XDG_RUNTIME_DIR']) / 'hypr' / os.environ['HYPRLAND_INSTANCE_SIGNATURE'] / '.socket.sock'
 terminal_pid = None
+initial_client_pids = set()
 
 
 def command(*args, timeout=20):
@@ -62,6 +65,15 @@ def capture(name):
   command('grim', str(artifacts / (name + '.png')))
 
 
+def close_crash_reporters():
+  for client in query('clients'):
+    if client['class'] == 'org.quickshell' and client['pid'] not in initial_client_pids:
+      try:
+        os.kill(client['pid'], signal.SIGTERM)
+      except ProcessLookupError:
+        pass
+
+
 def layers(namespace):
   return [layer for monitor in query('layers').values()
       for level in monitor['levels'].values() for layer in level
@@ -75,9 +87,9 @@ def geometry():
       'at': clients[0]['at'], 'size': clients[0]['size']}
 
 
-def stable_during(name, action):
+def stable_during(name, action, recovered=None):
   expected = geometry()
-  old_pid = layers('omarchy-bar')[0]['pid']
+  old_bar = layers('omarchy-bar')[0]
   samples, errors = [], []
   stop = threading.Event()
 
@@ -93,7 +105,10 @@ def stable_during(name, action):
   worker.start()
   try:
     action()
-    wait(name + ' recovers', lambda: status()['ready'] and any(layer['pid'] != old_pid for layer in layers('omarchy-bar')))
+    # Quickshell's signal handler re-execs in the same PID. Its replacement
+    # layer surface, rather than the PID alone, proves recovery completed.
+    wait(name + ' recovers', recovered or (lambda: status()['ready'] and any(
+      (layer['pid'], layer['address']) != (old_bar['pid'], old_bar['address']) for layer in layers('omarchy-bar'))))
     time.sleep(.3)
   finally:
     stop.set()
@@ -119,6 +134,7 @@ def set_config(**bar):
 
 
 try:
+  initial_client_pids = {client['pid'] for client in query('clients')}
   flag.unlink(missing_ok=True)
   set_config(position='top', transparent=False)
   command('omarchy-shell', 'omarchy.bar', 'syncHidden')
@@ -173,18 +189,36 @@ try:
   os.kill(helper_pid, signal.SIGKILL)
   wait('dead reservation host is unmapped', lambda: not layers('omarchy-bar-reservation'))
   time.sleep(2)
-  command('env', 'OMARCHY_BAR_SOCKET=' + main_env['OMARCHY_BAR_SOCKET'],
-    'quickshell', '-d', '-n', '-p', str(root / 'shell/bar-reservation'))
-  wait('late host adopts the running shell', lambda: status()['ready'] and bool(layers('omarchy-bar-reservation')))
+  stable_during('late-host-handoff', lambda: command('env', 'OMARCHY_BAR_SOCKET=' + main_env['OMARCHY_BAR_SOCKET'],
+    'quickshell', '-d', '-n', '-p', str(root / 'shell/bar-reservation')),
+    lambda: status()['ready'] and bool(layers('omarchy-bar-reservation')))
   assert layers('omarchy-bar')[0]['pid'] == main_pid, 'reconnection does not restart the main shell'
   stable_during('restart-after-late-host', lambda: command('omarchy-restart-shell'))
   capture('success-bar-late-host')
+  # SIGSEGV goes through Quickshell's own crash handler and core-dump child;
+  # SIGKILL alone does not exercise inherited socket descriptors there.
+  time.sleep(11)
+  stable_during('segfault-recovery', lambda: os.kill(layers('omarchy-bar')[0]['pid'], signal.SIGSEGV))
+  capture('success-bar-segfault-recovery')
+  close_crash_reporters()
+  style_path.write_text('[bar]\nsize-horizontal = 300\nsize-vertical = 300\nscale-with-font = false\n')
+  command('omarchy-restart-shell')
+  wait('300-pixel bar reserves its configured size', lambda: status()['snapshot']['size'] == 300 and status()['ready'])
+  time.sleep(.5)
+  stable_during('large-bar-restart', lambda: command('omarchy-restart-shell'))
+  stable_during('large-bar-crash', lambda: os.kill(layers('omarchy-bar')[0]['pid'], signal.SIGKILL))
+  capture('success-bar-large')
   print('ok - bar reservation acceptance checks passed', flush=True)
 except Exception:
   capture('failure-bar-reservation')
   raise
 finally:
+  close_crash_reporters()
   config_path.write_bytes(original_config)
+  if original_style is None:
+    style_path.unlink(missing_ok=True)
+  else:
+    style_path.write_bytes(original_style)
   if original_hidden:
     flag.touch()
   else:

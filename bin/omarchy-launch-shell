@@ -10,7 +10,7 @@ bar_reservation_call() {
   timeout --kill-after=1s 1s quickshell ipc -n -p "$OMARCHY_PATH/shell/bar-reservation" call reservation "$1" >/dev/null 2>&1 || true
 }
 
-unset OMARCHY_BAR_SOCKET
+unset OMARCHY_BAR_SOCKET OMARCHY_BAR_CLIENT
 if [[ -n ${XDG_RUNTIME_DIR:-} && -n ${WAYLAND_DISPLAY:-} && -f $OMARCHY_PATH/shell/bar-reservation/shell.qml ]]; then
   bar_display_id=$(printf '%s' "$WAYLAND_DISPLAY" | sha256sum | cut -c1-16)
   export OMARCHY_BAR_SOCKET="$XDG_RUNTIME_DIR/omarchy-bar-$bar_display_id.sock"
@@ -22,6 +22,12 @@ if [[ -n ${XDG_RUNTIME_DIR:-} && -n ${WAYLAND_DISPLAY:-} && -f $OMARCHY_PATH/she
     logger -t omarchy-shell "Bar reservation host unavailable; using the bar's own exclusive zone."
     unset OMARCHY_BAR_SOCKET
   fi
+fi
+if [[ -n ${OMARCHY_BAR_SOCKET:-} ]]; then
+  # Quickshell re-execs itself after SIGSEGV while its core-dump child can
+  # still hold the old socket. Preserve one logical owner across that exec.
+  read -r OMARCHY_BAR_CLIENT </proc/sys/kernel/random/uuid
+  export OMARCHY_BAR_CLIENT
 fi
 
 # Quickshell only logs to its instance runtime dir (tmpfs), so when the shell
